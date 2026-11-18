@@ -11,6 +11,9 @@ struct QuickAdvisorView: View {
     @State private var secondRank: CardRank = .king
     @State private var isSuited: Bool = true
 
+    private let quickStacks: [Double] = [10, 15, 25, 40, 100, 150]
+    private let openSizes: [Double] = [2.0, 2.5, 3.0, 4.0]
+
     private var isPair: Bool { firstRank == secondRank }
 
     private var currentHandCode: String {
@@ -24,8 +27,8 @@ struct QuickAdvisorView: View {
         return selectedOpener
     }
 
-    private var recommendedAction: HandAction {
-        store.action(
+    private var advice: DynamicAdviceResult {
+        store.evaluateDynamicAdvice(
             for: currentHandCode,
             position: selectedPosition,
             situation: selectedSituation,
@@ -34,7 +37,7 @@ struct QuickAdvisorView: View {
     }
 
     private var rngResolvedAction: HandAction {
-        recommendedAction.resolveWithRNG(store.rngValue)
+        advice.action.resolveWithRNG(store.rngValue)
     }
 
     private var handTier: YokosawaColorTier {
@@ -53,12 +56,15 @@ struct QuickAdvisorView: View {
                     }
                     .pickerStyle(.segmented)
 
-                    // 1. Recommended Action Banner + GTO RNG
+                    // 1. Recommended Action Banner + Sizing + Stack Reason
                     actionResultCard
 
-                    // 2. Hero Position Selector
+                    // 2. Stack Size & Table Environment Controls
+                    stackControlSection
+
+                    // 3. Hero Position Selector
                     VStack(alignment: .leading, spacing: 6) {
-                        Text("1. 自分のポジション (Hero)")
+                        Text("2. 自分のポジション (Hero)")
                             .font(.caption.bold())
                             .foregroundColor(.secondary)
 
@@ -88,9 +94,9 @@ struct QuickAdvisorView: View {
                         }
                     }
 
-                    // 3. Situation Selector & Opener Position (when vs Open)
+                    // 4. Situation Selector & Opener Position / Sizing
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("2. 現在の状況 (アクション)")
+                        Text("3. 現在の状況 (アクション)")
                             .font(.caption.bold())
                             .foregroundColor(.secondary)
 
@@ -129,10 +135,10 @@ struct QuickAdvisorView: View {
                         }
                     }
 
-                    // 4. Two-Tap Card Rank Picker
+                    // 5. Two-Tap Card Rank Picker
                     VStack(alignment: .leading, spacing: 10) {
                         HStack {
-                            Text("3. 配られたハンドを選択")
+                            Text("4. 配られたハンドを選択")
                                 .font(.caption.bold())
                                 .foregroundColor(.secondary)
                             Spacer()
@@ -168,13 +174,66 @@ struct QuickAdvisorView: View {
         }
     }
 
+    private var stackControlSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("1. 実効スタック: \(Int(store.effectiveStackBB)) BB")
+                    .font(.caption.bold())
+                    .foregroundColor(.secondary)
+                Spacer()
+                Toggle("アンティ有", isOn: $store.hasAnte)
+                    .font(.caption2.bold())
+                    .fixedSize()
+            }
+
+            // Quick Stack Preset Buttons
+            HStack(spacing: 5) {
+                ForEach(quickStacks, id: \.self) { bb in
+                    Button {
+                        triggerHaptic()
+                        store.effectiveStackBB = bb
+                    } label: {
+                        Text("\(Int(bb))BB")
+                            .font(.caption2.bold())
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 6)
+                            .background(
+                                Int(store.effectiveStackBB) == Int(bb)
+                                    ? Color.purple
+                                    : Color(.systemBackground)
+                            )
+                            .foregroundColor(Int(store.effectiveStackBB) == Int(bb) ? .white : .primary)
+                            .cornerRadius(7)
+                    }
+                }
+            }
+
+            HStack(spacing: 10) {
+                Slider(value: $store.effectiveStackBB, in: 5...200, step: 1)
+                Text("Open額:")
+                    .font(.caption2.bold())
+                    .foregroundColor(.secondary)
+                Picker("Open額", selection: $store.openRaiseSizeBB) {
+                    ForEach(openSizes, id: \.self) { sz in
+                        Text(String(format: "%.1fBB", sz)).tag(sz)
+                    }
+                }
+                .pickerStyle(.menu)
+            }
+        }
+        .padding(10)
+        .background(Color(.secondarySystemBackground))
+        .cornerRadius(12)
+    }
+
     private var actionResultCard: some View {
-        let freq = recommendedAction.frequencies
+        let act = advice.action
+        let freq = act.frequencies
         let maxBB = store.maxPushBB(for: currentHandCode, position: selectedPosition)
 
-        return VStack(spacing: 10) {
+        return VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text("\(store.selectedProfile.shortTitle) • \(selectedPosition.rawValue) / \(selectedSituation.shortName)")
+                Text("\(advice.stackZoneLabel) • \(selectedPosition.rawValue) / \(selectedSituation.shortName)")
                     .font(.caption.bold())
                     .padding(.horizontal, 8)
                     .padding(.vertical, 4)
@@ -193,24 +252,33 @@ struct QuickAdvisorView: View {
 
             HStack(alignment: .center, spacing: 14) {
                 Text(currentHandCode)
-                    .font(.system(size: 40, weight: .heavy, design: .rounded))
+                    .font(.system(size: 38, weight: .heavy, design: .rounded))
                     .padding(.horizontal, 12)
                     .padding(.vertical, 6)
                     .background(Color.black.opacity(0.2))
                     .cornerRadius(12)
 
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(recommendedAction.shortBadge)
-                        .font(.system(size: 30, weight: .black, design: .rounded))
-                    Text(recommendedAction.displayLabel)
+                    Text(act.shortBadge)
+                        .font(.system(size: 28, weight: .black, design: .rounded))
+                    Text("推奨サイズ: \(advice.sizingText)")
                         .font(.caption.bold())
-                        .opacity(0.92)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.white.opacity(0.2))
+                        .cornerRadius(4)
                 }
                 Spacer()
             }
 
+            // Dynamic Stack Reason Text
+            Text(advice.reasonText)
+                .font(.caption2)
+                .opacity(0.95)
+                .fixedSize(horizontal: false, vertical: true)
+
             // GTO Frequency Bar + RNG Roll Button
-            HStack(spacing: 10) {
+            HStack(spacing: 8) {
                 Text("R:\(freq.raise)% C:\(freq.call)% F:\(freq.fold)%")
                     .font(.caption2.monospaced().bold())
                     .padding(.horizontal, 8)
@@ -218,7 +286,7 @@ struct QuickAdvisorView: View {
                     .background(Color.black.opacity(0.22))
                     .cornerRadius(6)
 
-                Text("Push上限: \(maxBB)BB")
+                Text("Nash上限: \(maxBB)BB")
                     .font(.caption2.bold())
                     .padding(.horizontal, 8)
                     .padding(.vertical, 4)
@@ -243,12 +311,12 @@ struct QuickAdvisorView: View {
                 }
             }
         }
-        .padding(16)
+        .padding(15)
         .frame(maxWidth: .infinity)
-        .background(recommendedAction.color)
-        .foregroundColor(recommendedAction.textColor)
+        .background(act.color)
+        .foregroundColor(act.textColor)
         .cornerRadius(18)
-        .shadow(color: recommendedAction.color.opacity(0.32), radius: 8, y: 4)
+        .shadow(color: act.color.opacity(0.32), radius: 8, y: 4)
     }
 
     private func rankRow(title: String, selection: Binding<CardRank>) -> some View {

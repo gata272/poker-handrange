@@ -23,7 +23,6 @@ struct PushFoldView: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 10) {
-                // Position Selector (UTG..SB)
                 HStack(spacing: 5) {
                     ForEach([PokerPosition.utg, .hj, .co, .btn, .sb]) { pos in
                         Button {
@@ -41,7 +40,6 @@ struct PushFoldView: View {
                 }
                 .padding(.horizontal)
 
-                // Stack Depth Selector
                 VStack(spacing: 6) {
                     HStack {
                         Text("残りスタック: \(Int(stackBB)) BB")
@@ -76,7 +74,6 @@ struct PushFoldView: View {
                 }
                 .padding(.horizontal)
 
-                // 13x13 Push/Fold Grid
                 GeometryReader { geo in
                     let spacing: CGFloat = 2
                     let totalSpacing = spacing * 12

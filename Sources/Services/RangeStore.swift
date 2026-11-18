@@ -4,11 +4,16 @@ import SwiftUI
 @MainActor
 final class RangeStore: ObservableObject {
     @Published var selectedProfile: StrategyProfile = .gto100bb
-    /// Key format: "\(profile.rawValue)|\(heroPos.rawValue)|\(situation.rawValue)|\(villainPos?.rawValue ?? "ANY")"
     @Published var customRanges: [String: [String: HandAction]] = [:]
     @Published var rngValue: Int = Int.random(in: 1...100)
 
-    private let storageFileName = "custom_poker_ranges_v2.json"
+    // Dynamic Stack & Table Environment Parameters
+    @Published var effectiveStackBB: Double = 100.0
+    @Published var hasAnte: Bool = false
+    @Published var openRaiseSizeBB: Double = 2.5
+    @Published var isStackAdjustmentEnabled: Bool = true
+
+    private let storageFileName = "custom_poker_ranges_v3.json"
 
     init() {
         loadRanges()
@@ -36,7 +41,8 @@ final class RangeStore: ObservableObject {
         return "\(profile.rawValue)|\(position.rawValue)|\(situation.rawValue)|\(openerTag)"
     }
 
-    func action(
+    /// Base chart action without dynamic stack override
+    func baseAction(
         for handCode: String,
         profile: StrategyProfile? = nil,
         position: PokerPosition,
@@ -50,6 +56,285 @@ final class RangeStore: ObservableObject {
         }
         let fallbackKey = makeKey(profile: prof, position: position, situation: situation, opener: nil)
         return customRanges[fallbackKey]?[handCode] ?? .fold
+    }
+
+    /// Dynamic stack-aware action & sizing recommendation
+    func evaluateDynamicAdvice(
+        for handCode: String,
+        position: PokerPosition,
+        situation: PreflopSituation,
+        opener: PokerPosition? = nil
+    ) -> DynamicAdviceResult {
+        let stack = Int(effectiveStackBB.rounded())
+        let base = baseAction(for: handCode, position: position, situation: situation, opener: opener)
+
+        guard isStackAdjustmentEnabled else {
+            return DynamicAdviceResult(
+                action: base,
+                sizingText: defaultSizingText(for: base, situation: situation, stack: stack),
+                reasonText: "ベースレンジ表通りの判定（スタック自動補正オフ）",
+                stackZoneLabel: "\(stack)BB (固定)"
+            )
+        }
+
+        // 1. Short Stack Mode (<= 15 BB): Nash Push / Fold or 3-Bet Jam
+        if stack <= 15 {
+            let maxPush = maxPushBB(for: handCode, position: position) + (hasAnte ? 2 : 0)
+            switch situation {
+            case .rfi:
+                if maxPush >= stack {
+                    return DynamicAdviceResult(
+                        action: .allIn,
+                        sizingText: "オールイン (\(stack)BB Push)",
+                        reasonText: "\(stack)BB以下のショートスタック域。Nash均衡上限(\(maxPush)BB)内のため直接Pushが+EVです。",
+                        stackZoneLabel: "ショート (\(stack)BB)"
+                    )
+                } else {
+                    return DynamicAdviceResult(
+                        action: .fold,
+                        sizingText: "フォールド",
+                        reasonText: "\(stack)BBでのPush上限(\(maxPush)BB)未満のためフォールド推奨です。",
+                        stackZoneLabel: "ショート (\(stack)BB)"
+                    )
+                }
+            case .vsOpen:
+                let jamThreshold = max(6, maxPush - 2)
+                if jamThreshold >= stack || PresetRangeBuilder.tier1Red.contains(handCode) || PresetRangeBuilder.tier2Yellow.contains(handCode) {
+                    return DynamicAdviceResult(
+                        action: .allIn,
+                        sizingText: "3-Bet オールイン (\(stack)BB)",
+                        reasonText: "\(stack)BBではコールで止めるとSPRが小さすぎるため、強いハンドは直接オールインします。",
+                        stackZoneLabel: "ショート (\(stack)BB)"
+                    )
+                } else {
+                    return DynamicAdviceResult(
+                        action: .fold,
+                        sizingText: "フォールド",
+                        reasonText: "\(stack)BBではインプライドオッズが足りないため、コールせずフォールドします。",
+                        stackZoneLabel: "ショート (\(stack)BB)"
+                    )
+                }
+            case .vs3Bet:
+                if PresetRangeBuilder.tier1Red.contains(handCode) || ["TT", "99", "AQs", "AQo", "AJs", "KQs"].contains(handCode) {
+                    return DynamicAdviceResult(
+                        action: .allIn,
+                        sizingText: "4-Bet オールイン (\(stack)BB)",
+                        reasonText: "\(stack)BBでは3-Betに対してコミットしているためオールインします。",
+                        stackZoneLabel: "ショート (\(stack)BB)"
+                    )
+                } else {
+                    return DynamicAdviceResult(
+                        action: .fold,
+                        sizingText: "フォールド",
+                        reasonText: "ショートスタックでの3-Betに対して勝率が不足しているためフォールドします。",
+                        stackZoneLabel: "ショート (\(stack)BB)"
+                    )
+                }
+            }
+        }
+
+        // 2. Reshove / Mid-Short Stack Mode (16 BB ... 28 BB)
+        if stack <= 28 {
+            switch situation {
+            case .rfi:
+                // Small pairs & low suited connectors lose value at 20BB from early/mid positions
+                if (position == .utg || position == .hj) && (HandMatrixHelper.isSmallPocketPair(handCode) || HandMatrixHelper.isLowSuitedConnector(handCode)) {
+                    return DynamicAdviceResult(
+                        action: .fold,
+                        sizingText: "フォールド",
+                        reasonText: "\(stack)BBではセットマインやストレート狙いのインプライドオッズが不足するため、序盤ポジションからはフォールドします。",
+                        stackZoneLabel: "ミドルショート (\(stack)BB)"
+                    )
+                }
+                if hasAnte && (position == .co || position == .btn || position == .sb) && base == .fold && HandMatrixHelper.isHighCardBroadWay(handCode) {
+                    return DynamicAdviceResult(
+                        action: .raise,
+                        sizingText: "2.0BB ミニマムレイズ",
+                        reasonText: "アンティ有り・\(stack)BBのため、ハイカード系で積極的にスチールを狙います。",
+                        stackZoneLabel: "ミドルショート (\(stack)BB)"
+                    )
+                }
+                let act = base == .allIn ? .raise : base
+                return DynamicAdviceResult(
+                    action: act,
+                    sizingText: act == .fold ? "フォールド" : "2.0BB〜2.2BB オープン",
+                    reasonText: "\(stack)BBではオープンサイズを2.0〜2.2BBに抑えてリスクを管理します。",
+                    stackZoneLabel: "ミドルショート (\(stack)BB)"
+                )
+
+            case .vsOpen:
+                // At 16-28BB: 3-Bet becomes 3-Bet All-In (Re-steal), speculative calls become folds
+                if HandMatrixHelper.isSmallPocketPair(handCode) && handCode != "66" && handCode != "55" {
+                    if position != .bb {
+                        return DynamicAdviceResult(
+                            action: .fold,
+                            sizingText: "フォールド (セットマイン不可)",
+                            reasonText: "\(stack)BBではセットを引いても相手のスタックが浅く回収できないため、小ペアのコールは避けます。",
+                            stackZoneLabel: "ミドルショート (\(stack)BB)"
+                        )
+                    }
+                }
+                if base == .raise || base == .mixedRaiseCall || base == .mixedRaiseFold || base == .allIn {
+                    if ["AA", "KK"].contains(handCode) && stack >= 24 {
+                        return DynamicAdviceResult(
+                            action: .raise,
+                            sizingText: String(format: "%.1fBB 3-Bet", openRaiseSizeBB * 2.6),
+                            reasonText: "プレミアムハンドのため、相手を降ろしすぎない小サイズ3-Betも有効です。",
+                            stackZoneLabel: "ミドルショート (\(stack)BB)"
+                        )
+                    }
+                    return DynamicAdviceResult(
+                        action: .allIn,
+                        sizingText: "3-Bet オールイン (\(stack)BB リスチール)",
+                        reasonText: "\(stack)BBでの3-Betはサイズ的にコミットするため、直接オールイン(リスチール)してフォールドエクイティを最大化します。",
+                        stackZoneLabel: "ミドルショート (\(stack)BB)"
+                    )
+                }
+                if base == .call && HandMatrixHelper.isLowSuitedConnector(handCode) && position != .bb {
+                    return DynamicAdviceResult(
+                        action: .fold,
+                        sizingText: "フォールド",
+                        reasonText: "\(stack)BBではスーテッドコネクターのインプライドオッズが不足するためフォールド寄りになります。",
+                        stackZoneLabel: "ミドルショート (\(stack)BB)"
+                    )
+                }
+                return DynamicAdviceResult(
+                    action: base,
+                    sizingText: defaultSizingText(for: base, situation: situation, stack: stack),
+                    reasonText: "\(stack)BBスタックに応じたディフェンス判定です。",
+                    stackZoneLabel: "ミドルショート (\(stack)BB)"
+                )
+
+            case .vs3Bet:
+                if base == .raise || base == .mixedRaiseCall || base == .allIn {
+                    return DynamicAdviceResult(
+                        action: .allIn,
+                        sizingText: "4-Bet オールイン (\(stack)BB)",
+                        reasonText: "\(stack)BBで3-Betを受けた場合、継続する強いハンドは4-Betオールインにします。",
+                        stackZoneLabel: "ミドルショート (\(stack)BB)"
+                    )
+                }
+                return DynamicAdviceResult(
+                    action: .fold,
+                    sizingText: "フォールド",
+                    reasonText: "\(stack)BBで3-BetにコールするとフロップのSPRが1未満になるため、オールインできないハンドはフォールドします。",
+                    stackZoneLabel: "ミドルショート (\(stack)BB)"
+                )
+            }
+        }
+
+        // 3. Medium Stack Mode (29 BB ... 55 BB)
+        if stack <= 55 {
+            if situation == .vs3Bet && (HandMatrixHelper.isSmallPocketPair(handCode) || HandMatrixHelper.isLowSuitedConnector(handCode)) {
+                return DynamicAdviceResult(
+                    action: .fold,
+                    sizingText: "フォールド (スタック浅め)",
+                    reasonText: "\(stack)BBでは3-Betポットでのインプライドオッズが足りないため、投機的ハンドはフォールドします。",
+                    stackZoneLabel: "ミドル (\(stack)BB)"
+                )
+            }
+            if situation == .vsOpen && openRaiseSizeBB >= 3.5 && base == .call && !PresetRangeBuilder.tier2Yellow.contains(handCode) {
+                return DynamicAdviceResult(
+                    action: .fold,
+                    sizingText: "フォールド (大サイズオープン対策)",
+                    reasonText: "相手のオープンサイズが\(String(format: "%.1f", openRaiseSizeBB))BBと大きく、\(stack)BBではオッズが合わないためタイトにフォールドします。",
+                    stackZoneLabel: "ミドル (\(stack)BB)"
+                )
+            }
+            let normalized = base == .allIn ? .raise : base
+            return DynamicAdviceResult(
+                action: normalized,
+                sizingText: defaultSizingText(for: normalized, situation: situation, stack: stack),
+                reasonText: "ミドルスタック(\(stack)BB)向けの標準アクションです。",
+                stackZoneLabel: "ミドル (\(stack)BB)"
+            )
+        }
+
+        // 4. Deep Stack Mode (>= 130 BB)
+        if stack >= 130 {
+            if situation == .vsOpen && (position == .btn || position == .co || position == .bb) {
+                if HandMatrixHelper.isSmallPocketPair(handCode) || HandMatrixHelper.isLowSuitedConnector(handCode) {
+                    return DynamicAdviceResult(
+                        action: .call,
+                        sizingText: String(format: "%.1fBB コール (ディープ・インプライドオッズ◎)", openRaiseSizeBB),
+                        reasonText: "\(stack)BBのディープスタックではセットやストレート完成時の見返り(インプライドオッズ)が極めて高いため、積極的にコールできます。",
+                        stackZoneLabel: "ディープ (\(stack)BB)"
+                    )
+                }
+                if HandMatrixHelper.isSuitedAceOrWheel(handCode) && base == .fold {
+                    return DynamicAdviceResult(
+                        action: .mixedRaiseCall,
+                        sizingText: String(format: "3-Bet (%.1fBB) または コール", openRaiseSizeBB * 3.2),
+                        reasonText: "\(stack)BBのディープ環境ではナッツフラッシュドローやホイールを作れるAxsの価値が大幅に上がります。",
+                        stackZoneLabel: "ディープ (\(stack)BB)"
+                    )
+                }
+            }
+            let normalized = base == .allIn ? .raise : base
+            return DynamicAdviceResult(
+                action: normalized,
+                sizingText: defaultSizingText(for: normalized, situation: situation, stack: stack),
+                reasonText: "ディープスタック(\(stack)BB)環境。ナッツを作れるスーテッドやペアの価値が高まります。",
+                stackZoneLabel: "ディープ (\(stack)BB)"
+            )
+        }
+
+        // 5. Standard 100BB Stack (56 BB ... 129 BB)
+        if situation == .vsOpen && openRaiseSizeBB >= 4.0 && base == .call && PresetRangeBuilder.tier4Blue.contains(handCode) {
+            return DynamicAdviceResult(
+                action: .fold,
+                sizingText: "フォールド (相手オープン大)",
+                reasonText: "相手のオープンが\(String(format: "%.1f", openRaiseSizeBB))BBと大きいため、下位コールレンジをフォールドに回します。",
+                stackZoneLabel: "スタンダード (\(stack)BB)"
+            )
+        }
+
+        let normalized = base == .allIn ? .raise : base
+        return DynamicAdviceResult(
+            action: normalized,
+            sizingText: defaultSizingText(for: normalized, situation: situation, stack: stack),
+            reasonText: "\(selectedProfile.shortTitle)（\(stack)BB）の標準推奨アクションです。",
+            stackZoneLabel: "スタンダード (\(stack)BB)"
+        )
+    }
+
+    func action(
+        for handCode: String,
+        profile: StrategyProfile? = nil,
+        position: PokerPosition,
+        situation: PreflopSituation,
+        opener: PokerPosition? = nil
+    ) -> HandAction {
+        if profile == nil && isStackAdjustmentEnabled {
+            return evaluateDynamicAdvice(for: handCode, position: position, situation: situation, opener: opener).action
+        }
+        return baseAction(for: handCode, profile: profile, position: position, situation: situation, opener: opener)
+    }
+
+    private func defaultSizingText(for action: HandAction, situation: PreflopSituation, stack: Int) -> String {
+        switch action {
+        case .allIn:
+            return "オールイン (\(stack)BB)"
+        case .raise, .mixedRaiseCall, .mixedRaiseFold:
+            switch situation {
+            case .rfi:
+                let rfiSize = stack <= 40 ? 2.2 : openRaiseSizeBB
+                return String(format: "%.1fBB オープンレイズ", rfiSize)
+            case .vsOpen:
+                let mult = 3.0
+                return String(format: "%.1fBB 3-Bet (IP 3倍 / OOP 3.5〜4倍)", openRaiseSizeBB * mult)
+            case .vs3Bet:
+                return String(format: "%.1fBB 4-Bet (約2.2〜2.5倍)", openRaiseSizeBB * 7.5)
+            }
+        case .call:
+            switch situation {
+            case .rfi: return "リンプせずレイズ推奨"
+            case .vsOpen: return String(format: "%.1fBB コール", openRaiseSizeBB)
+            case .vs3Bet: return "3-Betにコール"
+            }
+        case .fold:
+            return "フォールド"
+        }
     }
 
     func setAction(
@@ -78,7 +363,7 @@ final class RangeStore: ObservableObject {
         situation: PreflopSituation,
         opener: PokerPosition? = nil
     ) {
-        let current = action(for: handCode, position: position, situation: situation, opener: opener)
+        let current = baseAction(for: handCode, position: position, situation: situation, opener: opener)
         let order: [HandAction] = [.fold, .raise, .mixedRaiseCall, .call, .allIn]
         let nextIndex = ((order.firstIndex(of: current) ?? 0) + 1) % order.count
         setAction(order[nextIndex], for: handCode, position: position, situation: situation, opener: opener)
@@ -115,9 +400,12 @@ final class RangeStore: ObservableObject {
         return ((raiseCombos / totalCombos) * 100.0, (callCombos / totalCombos) * 100.0)
     }
 
-    /// Nash Push/Fold threshold (Max BB stack where pushing is +EV)
     func maxPushBB(for handCode: String, position: PokerPosition) -> Int {
         NashPushFoldTable.maxBB(for: handCode, position: position)
+    }
+
+    func resetToYokosawaPreset() {
+        resetAllProfilesToDefault()
     }
 
     func resetAllProfilesToDefault() {
@@ -198,7 +486,6 @@ struct PresetRangeBuilder {
         let btnBase = coBase.union(tier5Purple)
 
         for profile in StrategyProfile.allCases {
-            // 1. RFI Ranges
             for pos in PokerPosition.allCases {
                 var table: [String: HandAction] = [:]
                 switch pos {
@@ -230,7 +517,6 @@ struct PresetRangeBuilder {
                 result["\(profile.rawValue)|\(pos.rawValue)|\(PreflopSituation.rfi.rawValue)|ANY"] = table
             }
 
-            // 2. vs Open Ranges (Opener-Aware for GTO, General fallback for others)
             for hero in PokerPosition.allCases {
                 let openers: [PokerPosition?] = [nil] + hero.validOpenerPositions.map { Optional($0) }
                 for opener in openers {
@@ -253,7 +539,6 @@ struct PresetRangeBuilder {
                 }
             }
 
-            // 3. vs 3-Bet Ranges
             for pos in PokerPosition.allCases {
                 var table: [String: HandAction] = [:]
                 switch profile {
@@ -298,14 +583,12 @@ struct PresetRangeBuilder {
     private static func populateGTOVsOpen(_ table: inout [String: HandAction], hero: PokerPosition, isLateOpener: Bool) {
         for h in tier1Red { table[h] = .raise }
         if hero == .sb {
-            // SB Linear 3-Bet Strategy
             let sb3Bet = isLateOpener
                 ? ["TT", "99", "88", "AQs", "AJs", "ATs", "A5s", "A4s", "KQs", "KJs", "KTs", "QJs", "QTs", "JTs", "AQo", "AJo", "KQo"]
                 : ["TT", "99", "AQs", "AJs", "KQs", "A5s", "AQo"]
             for h in sb3Bet { table[h] = .raise }
             for h in ["77", "66", "T9s", "98s"] { table[h] = .mixedRaiseFold }
         } else if hero == .bb {
-            // BB Polarized 3-Bet + Wide Defense
             let bb3Bet = isLateOpener
                 ? ["TT", "99", "AQs", "AJs", "KQs", "KJs", "QJs", "JTs", "A5s", "A4s", "A3s", "K9s", "Q9s", "87s", "76s", "65s", "54s", "AQo"]
                 : ["AQs", "A5s", "A4s", "KQs", "76s", "65s"]
@@ -320,7 +603,6 @@ struct PresetRangeBuilder {
                 table[h] = .call
             }
         } else {
-            // IP / MP vs Open
             for h in ["AQs", "AJs", "KQs", "AQo"] { table[h] = .raise }
             for h in ["TT", "99", "A5s", "A4s", "KJs", "QJs", "JTs", "76s", "65s"] {
                 table[h] = isLateOpener ? .raise : .mixedRaiseCall
@@ -332,7 +614,6 @@ struct PresetRangeBuilder {
     }
 
     private static func populateHighRakeVsOpen(_ table: inout [String: HandAction], hero: PokerPosition, isLateOpener: Bool) {
-        // High Rake: Aggressive 3-Bet or Fold (minimal flatting)
         let aggressive3Bet = isLateOpener
             ? tier1Red.union(tier2Yellow).union(["A9s", "A8s", "A5s", "A4s", "KTs", "QTs", "T9s", "98s", "AJo", "KQo"])
             : tier1Red.union(["TT", "99", "AQs", "AJs", "KQs", "A5s", "A4s", "AQo"])
@@ -345,7 +626,6 @@ struct PresetRangeBuilder {
     }
 
     private static func populateMTT25BBVsOpen(_ table: inout [String: HandAction], hero: PokerPosition, isLateOpener: Bool) {
-        // MTT 25BB: Re-steal 3-Bet Jam (All-In) + tight call
         for h in ["AA", "KK", "QQ"] { table[h] = .raise }
         let jamHands = isLateOpener
             ? ["JJ", "TT", "99", "88", "77", "66", "55", "AKs", "AQs", "AJs", "ATs", "A9s", "A8s", "A5s", "A4s", "KQs", "KJs", "QJs", "JTs", "AKo", "AQo", "AJo", "KQo"]
@@ -359,7 +639,6 @@ struct PresetRangeBuilder {
     }
 }
 
-// MARK: - Short Stack Nash Equilibrium Push/Fold Table (Max BB up to 20BB)
 struct NashPushFoldTable {
     static func maxBB(for handCode: String, position: PokerPosition) -> Int {
         let baseScore = handStrengthScore(for: handCode)

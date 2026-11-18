@@ -32,6 +32,20 @@ struct RangeMatrixView: View {
                 .pickerStyle(.segmented)
                 .padding(.horizontal)
 
+                // Stack Slider synchronized with QuickAdvisorView
+                HStack(spacing: 8) {
+                    Text("スタック: \(Int(store.effectiveStackBB))BB")
+                        .font(.caption.bold())
+                        .frame(width: 95, alignment: .leading)
+                    Slider(value: $store.effectiveStackBB, in: 5...200, step: 5)
+                    Toggle("自動補正", isOn: $store.isStackAdjustmentEnabled)
+                        .labelsHidden()
+                    Text(store.isStackAdjustmentEnabled ? "スタック連動" : "固定表")
+                        .font(.caption2.bold())
+                        .foregroundColor(store.isStackAdjustmentEnabled ? .purple : .secondary)
+                }
+                .padding(.horizontal)
+
                 // Hero Position Bar
                 HStack(spacing: 4) {
                     ForEach(PokerPosition.allCases) { pos in
@@ -93,7 +107,7 @@ struct RangeMatrixView: View {
 
                 // Stats & Edit Toggle Bar
                 HStack(spacing: 10) {
-                    legendBadge(color: HandAction.raise.color, text: String(format: "RAISE %.1f%%", stats.raisePct))
+                    legendBadge(color: HandAction.raise.color, text: String(format: "RAISE/JAM %.1f%%", stats.raisePct))
                     legendBadge(color: HandAction.call.color, text: String(format: "CALL %.1f%%", stats.callPct))
                     Spacer()
                     Toggle("編集", isOn: $isEditMode)
@@ -140,12 +154,9 @@ struct RangeMatrixView: View {
                             HStack(spacing: spacing) {
                                 ForEach(0..<13, id: \.self) { col in
                                     let code = HandMatrixHelper.handCode(row: row, col: col)
-                                    let act = store.action(
-                                        for: code,
-                                        position: selectedPosition,
-                                        situation: selectedSituation,
-                                        opener: activeOpener
-                                    )
+                                    let act = isEditMode
+                                        ? store.baseAction(for: code, position: selectedPosition, situation: selectedSituation, opener: activeOpener)
+                                        : store.action(for: code, position: selectedPosition, situation: selectedSituation, opener: activeOpener)
 
                                     Button {
                                         if isEditMode {

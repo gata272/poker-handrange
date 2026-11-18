@@ -53,7 +53,6 @@ enum PokerPosition: String, CaseIterable, Identifiable, Codable {
         }
     }
 
-    /// Positions that can open before this position
     var validOpenerPositions: [PokerPosition] {
         PokerPosition.allCases.filter { $0.orderIndex < self.orderIndex }
     }
@@ -81,7 +80,7 @@ enum HandAction: String, CaseIterable, Identifiable, Codable {
 
     var displayLabel: String {
         switch self {
-        case .allIn: return "オールイン (Push / 3Bet Jam)"
+        case .allIn: return "オールイン (Push / Jam)"
         case .raise: return "レイズ / 3-Bet / 4-Bet (100%)"
         case .mixedRaiseCall: return "混合戦略: レイズ 60% / コール 40%"
         case .mixedRaiseFold: return "混合戦略: レイズ 50% / フォールド 50%"
@@ -101,7 +100,6 @@ enum HandAction: String, CaseIterable, Identifiable, Codable {
         }
     }
 
-    /// Frequency breakdown (Raise%, Call%, Fold%)
     var frequencies: (raise: Int, call: Int, fold: Int) {
         switch self {
         case .allIn, .raise: return (100, 0, 0)
@@ -130,7 +128,6 @@ enum HandAction: String, CaseIterable, Identifiable, Codable {
         }
     }
 
-    /// Returns concrete recommended action given a 1..100 RNG roll
     func resolveWithRNG(_ roll: Int) -> HandAction {
         let freq = frequencies
         if roll <= freq.raise {
@@ -141,6 +138,13 @@ enum HandAction: String, CaseIterable, Identifiable, Codable {
             return .fold
         }
     }
+}
+
+struct DynamicAdviceResult {
+    let action: HandAction
+    let sizingText: String
+    let reasonText: String
+    let stackZoneLabel: String
 }
 
 enum CardRank: Int, CaseIterable, Identifiable, Comparable {
@@ -199,6 +203,22 @@ struct HandMatrixHelper {
     static func combinationsCount(for handCode: String) -> Int {
         if handCode.count == 2 { return 6 }
         return handCode.hasSuffix("s") ? 4 : 12
+    }
+
+    static func isSmallPocketPair(_ code: String) -> Bool {
+        ["22", "33", "44", "55", "66"].contains(code)
+    }
+
+    static func isLowSuitedConnector(_ code: String) -> Bool {
+        ["87s", "76s", "65s", "54s", "53s", "64s", "75s", "86s", "97s"].contains(code)
+    }
+
+    static func isSuitedAceOrWheel(_ code: String) -> Bool {
+        ["A5s", "A4s", "A3s", "A2s"].contains(code)
+    }
+
+    static func isHighCardBroadWay(_ code: String) -> Bool {
+        ["AKs", "AQs", "AJs", "ATs", "KQs", "KJs", "QJs", "JTs", "AKo", "AQo", "AJo", "ATo", "KQo", "KJo", "QJo"].contains(code)
     }
 }
 

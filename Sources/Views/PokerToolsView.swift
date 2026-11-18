@@ -21,15 +21,18 @@ struct PokerToolsView: View {
         return (potSize / (potSize + betSize)) * 100.0
     }
 
-    private var sprValue: Double {
-        guard potSize > 0 else { return 0 }
-        return 100.0 / potSize
-    }
-
     var body: some View {
         NavigationStack {
             Form {
-                // 1. Pot Odds & MDF Quick Calculator
+                Section {
+                    Toggle("スタック量に応じた自動補正を有効化", isOn: $store.isStackAdjustmentEnabled)
+                    Toggle("アンティ (Ante) 有り環境", isOn: $store.hasAnte)
+                } header: {
+                    Text("スタック・環境連動設定")
+                } footer: {
+                    Text("オンにすると、15BB以下のPush/Fold転換、20〜28BBでの3-Betオールイン(リスチール)や小ペアのセットマイン不可判定、130BB以上のディープスタック補正が自動適用されます。")
+                }
+
                 Section {
                     VStack(alignment: .leading, spacing: 10) {
                         HStack {
@@ -73,11 +76,8 @@ struct PokerToolsView: View {
                     .padding(.vertical, 4)
                 } header: {
                     Text("ポットオッズ & MDF 計算機")
-                } footer: {
-                    Text("相手のベットサイズをタップするだけで、コールに必要な勝率(Required Equity)とGTO上の最小ディフェンス頻度(MDF)を即座に計算します。")
                 }
 
-                // 2. Strategy Profiles Description
                 Section {
                     ForEach(StrategyProfile.allCases) { prof in
                         VStack(alignment: .leading, spacing: 4) {
@@ -108,7 +108,6 @@ struct PokerToolsView: View {
                     Text("搭載レンジプロファイル (タップで切替)")
                 }
 
-                // 3. Backup & Reset
                 Section {
                     Button {
                         UIPasteboard.general.string = store.exportJSONString()
