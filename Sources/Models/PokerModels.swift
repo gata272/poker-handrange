@@ -1,6 +1,37 @@
 import Foundation
 import SwiftUI
 
+enum StrategyProfile: String, CaseIterable, Identifiable, Codable {
+    case yokosawa = "ヨコサワ標準 (100BB)"
+    case gto100bb = "GTO Cash (100BB)"
+    case highRake = "高レーキ 3Bet/Fold"
+    case mtt25bb = "MTT トーナメント (25BB)"
+
+    var id: String { rawValue }
+
+    var shortTitle: String {
+        switch self {
+        case .yokosawa: return "ヨコサワ"
+        case .gto100bb: return "GTO 100BB"
+        case .highRake: return "高レーキ"
+        case .mtt25bb: return "MTT 25BB"
+        }
+    }
+
+    var descriptionText: String {
+        switch self {
+        case .yokosawa:
+            return "ヨコサワハンドレンジ準拠。初心者〜中級者が迷わずプレイできる明確なベースライン。"
+        case .gto100bb:
+            return "GTO Wizard準拠の6-Max 100BBキャッシュ戦略。オープン位置別の防衛やポラライズ3-Bet、混合戦略(頻度)に対応。"
+        case .highRake:
+            return "アミューズメントや低レート向けのNo Flop No Drop対策。コールを極限まで減らし3-BetかFoldに寄せる戦略。"
+        case .mtt25bb:
+            return "トーナメント中盤(25BB・アンティ有)向け。ハイカード価値を重視し、3-Betオールイン(リスチール)を含めた構成。"
+        }
+    }
+}
+
 enum PokerPosition: String, CaseIterable, Identifiable, Codable {
     case utg = "UTG"
     case hj = "HJ"
@@ -11,36 +42,38 @@ enum PokerPosition: String, CaseIterable, Identifiable, Codable {
 
     var id: String { rawValue }
 
-    var fullName: String {
+    var orderIndex: Int {
         switch self {
-        case .utg: return "UTG (アンダー・ザ・ガン)"
-        case .hj: return "HJ (ハイジャック)"
-        case .co: return "CO (カットオフ)"
-        case .btn: return "BTN (ボタン)"
-        case .sb: return "SB (スモールブラインド)"
-        case .bb: return "BB (ビッグブラインド)"
+        case .utg: return 0
+        case .hj: return 1
+        case .co: return 2
+        case .btn: return 3
+        case .sb: return 4
+        case .bb: return 5
         }
+    }
+
+    /// Positions that can open before this position
+    var validOpenerPositions: [PokerPosition] {
+        PokerPosition.allCases.filter { $0.orderIndex < self.orderIndex }
     }
 }
 
 enum PreflopSituation: String, CaseIterable, Identifiable, Codable {
-    case rfi = "オープン (誰も参加していない)"
-    case vsOpen = "vs オープン (レイズが入った)"
-    case vs3Bet = "vs 3ベット (リレイズされた)"
+    case rfi = "RFI (オープン)"
+    case vsOpen = "vs Open"
+    case vs3Bet = "vs 3-Bet"
 
     var id: String { rawValue }
 
-    var shortName: String {
-        switch self {
-        case .rfi: return "RFI (オープン)"
-        case .vsOpen: return "vs Open"
-        case .vs3Bet: return "vs 3-Bet"
-        }
-    }
+    var shortName: String { rawValue }
 }
 
 enum HandAction: String, CaseIterable, Identifiable, Codable {
+    case allIn = "ALL-IN"
     case raise = "RAISE"
+    case mixedRaiseCall = "MIX (R/C)"
+    case mixedRaiseFold = "MIX (R/F)"
     case call = "CALL"
     case fold = "FOLD"
 
@@ -48,23 +81,43 @@ enum HandAction: String, CaseIterable, Identifiable, Codable {
 
     var displayLabel: String {
         switch self {
-        case .raise: return "レイズ / 3-Bet / 4-Bet"
-        case .call: return "コール"
-        case .fold: return "フォールド"
+        case .allIn: return "オールイン (Push / 3Bet Jam)"
+        case .raise: return "レイズ / 3-Bet / 4-Bet (100%)"
+        case .mixedRaiseCall: return "混合戦略: レイズ 60% / コール 40%"
+        case .mixedRaiseFold: return "混合戦略: レイズ 50% / フォールド 50%"
+        case .call: return "コール (100%)"
+        case .fold: return "フォールド (0%)"
         }
     }
 
     var shortBadge: String {
         switch self {
+        case .allIn: return "ALL-IN"
         case .raise: return "RAISE"
+        case .mixedRaiseCall: return "MIX R/C"
+        case .mixedRaiseFold: return "MIX R/F"
         case .call: return "CALL"
         case .fold: return "FOLD"
         }
     }
 
+    /// Frequency breakdown (Raise%, Call%, Fold%)
+    var frequencies: (raise: Int, call: Int, fold: Int) {
+        switch self {
+        case .allIn, .raise: return (100, 0, 0)
+        case .mixedRaiseCall: return (60, 40, 0)
+        case .mixedRaiseFold: return (50, 0, 50)
+        case .call: return (0, 100, 0)
+        case .fold: return (0, 0, 100)
+        }
+    }
+
     var color: Color {
         switch self {
+        case .allIn: return Color(red: 0.58, green: 0.16, blue: 0.82)
         case .raise: return Color(red: 0.85, green: 0.22, blue: 0.24)
+        case .mixedRaiseCall: return Color(red: 0.92, green: 0.52, blue: 0.14)
+        case .mixedRaiseFold: return Color(red: 0.86, green: 0.36, blue: 0.52)
         case .call: return Color(red: 0.16, green: 0.65, blue: 0.36)
         case .fold: return Color(.systemGray4)
         }
@@ -72,26 +125,27 @@ enum HandAction: String, CaseIterable, Identifiable, Codable {
 
     var textColor: Color {
         switch self {
-        case .raise, .call: return .white
         case .fold: return .primary
+        default: return .white
+        }
+    }
+
+    /// Returns concrete recommended action given a 1..100 RNG roll
+    func resolveWithRNG(_ roll: Int) -> HandAction {
+        let freq = frequencies
+        if roll <= freq.raise {
+            return self == .allIn ? .allIn : .raise
+        } else if roll <= (freq.raise + freq.call) {
+            return .call
+        } else {
+            return .fold
         }
     }
 }
 
 enum CardRank: Int, CaseIterable, Identifiable, Comparable {
-    case ace = 14
-    case king = 13
-    case queen = 12
-    case jack = 11
-    case ten = 10
-    case nine = 9
-    case eight = 8
-    case seven = 7
-    case six = 6
-    case five = 5
-    case four = 4
-    case three = 3
-    case two = 2
+    case ace = 14, king = 13, queen = 12, jack = 11, ten = 10
+    case nine = 9, eight = 8, seven = 7, six = 6, five = 5, four = 4, three = 3, two = 2
 
     var id: Int { rawValue }
 
@@ -121,17 +175,14 @@ enum CardRank: Int, CaseIterable, Identifiable, Comparable {
 struct HandMatrixHelper {
     static let allRanks: [CardRank] = CardRank.allCases
 
-    /// Returns canonical hand notation (e.g., "AKs", "AKo", "QQ") for row (0..12) and col (0..12)
     static func handCode(row: Int, col: Int) -> String {
         let r1 = allRanks[row]
         let r2 = allRanks[col]
         if row == col {
             return "\(r1.symbol)\(r2.symbol)"
         } else if row < col {
-            // Upper right = Suited
             return "\(r1.symbol)\(r2.symbol)s"
         } else {
-            // Lower left = Offsuit
             return "\(r2.symbol)\(r1.symbol)o"
         }
     }
@@ -146,17 +197,11 @@ struct HandMatrixHelper {
     }
 
     static func combinationsCount(for handCode: String) -> Int {
-        if handCode.count == 2 {
-            return 6 // Pocket pair
-        } else if handCode.hasSuffix("s") {
-            return 4 // Suited
-        } else {
-            return 12 // Offsuit
-        }
+        if handCode.count == 2 { return 6 }
+        return handCode.hasSuffix("s") ? 4 : 12
     }
 }
 
-/// Yokosawa-style Color Tier Classification (Red > Yellow > Green > Blue > Purple > Fold)
 enum YokosawaColorTier: String, CaseIterable, Identifiable {
     case tier1Red = "赤 (最強プレミアム)"
     case tier2Yellow = "黄 (強いハンド)"

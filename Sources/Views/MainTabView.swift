@@ -10,12 +10,17 @@ struct MainTabView: View {
 
             RangeMatrixView()
                 .tabItem {
-                    Label("レンジ表・編集", systemImage: "square.grid.3x3.fill")
+                    Label("レンジ表・GTO", systemImage: "square.grid.3x3.fill")
                 }
 
-            SettingsView()
+            PushFoldView()
                 .tabItem {
-                    Label("設定・データ", systemImage: "slider.horizontal.3")
+                    Label("Push/Fold", systemImage: "flame.fill")
+                }
+
+            PokerToolsView()
+                .tabItem {
+                    Label("オッズ計算・設定", systemImage: "function")
                 }
         }
     }
